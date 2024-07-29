@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
+	"time"
 )
 
 func buildResponse(statusLine, headers, body string) string {
@@ -20,6 +22,7 @@ func buildResponse(statusLine, headers, body string) string {
 
 func handleRequest(conn net.Conn) {
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	buffer := make([]byte, 1024)
 	n, err := conn.Read(buffer)
@@ -53,6 +56,20 @@ func handleRequest(conn net.Conn) {
 		statusLine = "HTTP/1.1 200 OK"
 		headers = fmt.Sprintf("Content-Type: text/plain\r\nContent-Length: %d", len(responseText))
 		body = responseText
+
+	case strings.HasPrefix(requestTarget[1], "/files/"):
+		fileName := strings.TrimPrefix(requestTarget[1], "/files/")
+		file, err := os.ReadFile(os.Args[2] + fileName)
+		if err != nil {
+			fmt.Println("Error reading file:", err)
+			statusLine = "HTTP/1.1 404 Not Found"
+			headers = ""
+			body = "File not found"
+		} else {
+			statusLine = "HTTP/1.1 200 OK"
+			headers = fmt.Sprintf("Content-Type: application/octet-stream\r\nContent-Length: %d", len(file))
+			body = string(file)
+		}
 
 	default:
 		statusLine = "HTTP/1.1 404 Not Found"
@@ -89,7 +106,7 @@ func main() {
 		}
 		fmt.Println("Accepted connection from:", conn.RemoteAddr())
 
-		handleRequest(conn)
+		go handleRequest(conn)
 		//fmt.Println("Received request:")
 		//fmt.Println(request)
 
