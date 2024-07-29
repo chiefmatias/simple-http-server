@@ -12,7 +12,9 @@ func buildResponse(statusLine, headers, body string) string {
 	response.WriteString("\r\n")
 	response.WriteString(headers)
 	response.WriteString("\r\n")
+	response.WriteString("\r\n")
 	response.WriteString(body)
+	response.WriteString("\r\n")
 	return response.String()
 }
 
@@ -43,7 +45,14 @@ func handleRequest(conn net.Conn) {
 
 		statusLine = "HTTP/1.1 200 OK"
 		headers = fmt.Sprintf("Content-Type: text/plain\r\nContent-Length: %d", len(responseText))
-		body = strings.TrimPrefix(requestTarget[1], "/echo/")
+		body = responseText
+
+	case strings.HasPrefix(requestTarget[1], "/user-agent"):
+		responseText := strings.TrimPrefix(parsedRequest[2], "User-Agent: ")
+
+		statusLine = "HTTP/1.1 200 OK"
+		headers = fmt.Sprintf("Content-Type: text/plain\r\nContent-Length: %d", len(responseText))
+		body = responseText
 
 	default:
 		statusLine = "HTTP/1.1 404 Not Found"
@@ -54,7 +63,7 @@ func handleRequest(conn net.Conn) {
 		}
 	}
 	response := buildResponse(statusLine, headers, body)
-	fmt.Println("Target:", requestTarget[1], "\nResponse:", response)
+	fmt.Println("\nTarget:", requestTarget[1], "\nResponse:", response)
 
 	if _, err := conn.Write([]byte(response)); err != nil {
 		fmt.Println("Error writing response:", err)
