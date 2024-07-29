@@ -7,15 +7,14 @@ import (
 )
 
 func main() {
-
 	listener, err := net.Listen("tcp", ":4221")
-
 	if err != nil {
 		fmt.Println("Error creating listener:", err)
 		return
 	}
 
 	defer listener.Close()
+
 	fmt.Println("Waiting for connection...")
 
 	for {
@@ -27,36 +26,42 @@ func main() {
 
 		fmt.Println("Accepted connection from:", conn.RemoteAddr())
 
-		if _, err := conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n")); err != nil {
-			fmt.Println(err)
+		buffer := make([]byte, 1024)
+		n, err := conn.Read(buffer)
+		if err != nil {
+			fmt.Println("Error reading from connection:", err)
+		}
 
-			buffer := make([]byte, 1024)
-			n, err := conn.Read(buffer)
-			if err != nil {
-				fmt.Println("Error reading from connection:", err)
+		request := string(buffer[:n])
+		//fmt.Println("Received request:")
+		//fmt.Println(request)
+
+		parsedRequest := strings.Split(request, "\r\n")
+		requestTarget := strings.Split(parsedRequest[0], " ")
+		var responseBody string
+
+		if requestTarget[1] == "/" {
+			responseBody := "HTTP/1.1 200 OK\r\n\r\n"
+			fmt.Println(responseBody)
+			if _, err := conn.Write([]byte(responseBody)); err != nil {
+				fmt.Println(err)
 			}
-
-			request := string(buffer[:n])
-
-			//fmt.Println("Received request:")
-
-			//fmt.Println(request)
-
-			parsedRequest := strings.Split(request, "\r\n")
-			requestTarget := strings.Split(parsedRequest[0], " ")
-
-			if requestTarget[1] != "/" {
-				fmt.Println("Resource not found:", requestTarget[1])
-				if _, err := conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n")); err != nil {
-					fmt.Println(err)
-				}
-
-			} else {
-				fmt.Println("Resource found: /")
-				if _, err := conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n")); err != nil {
-					fmt.Println(err)
-				}
+		} else if strings.HasPrefix(requestTarget[1], "/echo/") {
+			fmt.Println("Resource found:", requestTarget[1])
+			responseText := strings.TrimPrefix(requestTarget[1], "/echo/")
+			responseBody := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length:" + fmt.Sprint(len(responseText)) + "\r\n\r\n" + responseText
+			fmt.Println(responseBody)
+			if _, err := conn.Write([]byte(responseBody)); err != nil {
+				fmt.Println(err)
+			}
+		} else {
+			responseBody := "HTTP/1.1 404 Not Found\r\n\r\n"
+			fmt.Println("Resource not found:", requestTarget[1])
+			if _, err := conn.Write([]byte(responseBody)); err != nil {
+				fmt.Println(err)
 			}
 		}
+		fmt.Println(responseBody)
+
 	}
 }
