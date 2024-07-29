@@ -36,6 +36,12 @@ func main() {
 
 		fmt.Println("Accepted connection from:", conn.RemoteAddr())
 
+		if _, err := conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n")); err != nil {
+
+			fmt.Println(err)
+
+		}
+
 	}
 
 }
