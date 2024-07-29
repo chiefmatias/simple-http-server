@@ -1,24 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 	"time"
 )
-
-func buildResponse(statusLine, headers, body string) string {
-	var response strings.Builder
-	response.WriteString(statusLine)
-	response.WriteString("\r\n")
-	response.WriteString(headers)
-	response.WriteString("\r\n")
-	response.WriteString("\r\n")
-	response.WriteString(body)
-	response.WriteString("\r\n")
-	return response.String()
-}
 
 type Request struct {
 	Method        string
@@ -31,18 +21,16 @@ type Request struct {
 	Body          string
 }
 
-func parseRequest(request string) (Request, error) {
-
-	parsedRequest := strings.Split(request, "\r\n")
+func parseRequest(buffer []byte) (Request, error) {
+	requestBuffer := string(buffer)
+	parsedRequest := strings.Split(requestBuffer, "\r\n")
 	statusLine := strings.Split(parsedRequest[0], " ")
 
 	if len(parsedRequest) < 2 || len(statusLine) < 2 {
-		fmt.Println("Invalid request:", request)
-		err := fmt.Errorf("Invalid request:", request)
-		return Request{}, err
+		return Request{}, fmt.Errorf("invalid request: %s", requestBuffer)
 	}
 
-	r := Request{
+	request := Request{
 		Method: statusLine[0],
 		Target: statusLine[1],
 	}
@@ -51,114 +39,206 @@ func parseRequest(request string) (Request, error) {
 
 		switch {
 		case strings.HasPrefix(header, "User-Agent: "):
-			r.UserAgent = strings.TrimPrefix(header, "User-Agent: ")
+			request.UserAgent = strings.TrimPrefix(header, "User-Agent: ")
 
 		case strings.HasPrefix(header, "Accept: "):
-			r.Accept = strings.TrimPrefix(header, "Accept: ")
+			request.Accept = strings.TrimPrefix(header, "Accept: ")
 
 		case strings.HasPrefix(header, "Accept-Encoding: "):
-			r.Encoding = strings.TrimPrefix(header, "Accept-Encoding: ")
+			request.Encoding = strings.TrimPrefix(header, "Accept-Encoding: ")
 
 		case strings.HasPrefix(header, "Content-Type: "):
-			r.ContentType = strings.TrimPrefix(header, "Content-Type: ")
+			request.ContentType = strings.TrimPrefix(header, "Content-Type: ")
 
 		case strings.HasPrefix(header, "Content-Length: "):
-			r.ContentLength = strings.TrimPrefix(header, "Content-Length: ")
+			request.ContentLength = strings.TrimPrefix(header, "Content-Length: ")
 		}
 
-		if r.ContentLength != "0" {
-			r.Body = parsedRequest[len(parsedRequest)-1]
-		}
 	}
-	return r, nil
+	if request.ContentLength != "0" {
+		request.Body = parsedRequest[len(parsedRequest)-1]
+	}
+
+	return request, nil
 }
 
-func handleRequest(conn net.Conn) {
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
+type Response struct {
+	StatusLine string
+	Headers    ResponseHeaders
+	Body       string
+}
 
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Error reading from connection:", err)
-		return
+type ResponseHeaders struct {
+	Encoding      string
+	ContentType   string
+	ContentLength string
+}
+
+func (response Response) buildHeaders() string {
+	var headers strings.Builder
+	if response.Headers.Encoding != "" {
+		headers.WriteString("Content-Encoding: ")
+		headers.WriteString(response.Headers.Encoding)
+		headers.WriteString("\r\n")
+	}
+	if response.Headers.ContentType != "" {
+		headers.WriteString("Content-Type: ")
+		headers.WriteString(response.Headers.ContentType)
+		headers.WriteString("\r\n")
+	}
+	if response.Headers.ContentLength != "" {
+		headers.WriteString("Content-Length: ")
+		headers.WriteString(response.Headers.ContentLength)
+		headers.WriteString("\r\n")
+	}
+	return headers.String()
+}
+
+func (response Response) buildResponse() string {
+	var responseBuilder strings.Builder
+	responseBuilder.WriteString(response.StatusLine)
+	responseBuilder.WriteString("\r\n")
+	responseBuilder.WriteString(response.buildHeaders())
+	responseBuilder.WriteString("\r\n")
+	responseBuilder.WriteString(response.Body)
+	responseBuilder.WriteString("\r\n")
+	return responseBuilder.String()
+}
+
+func BaseEndpoint(request Request) (Response, error) {
+	statusLine := "HTTP/1.1 200 OK"
+
+	response := Response{
+		StatusLine: statusLine,
 	}
 
-	request := string(buffer[:n])
-	parsedRequest := strings.Split(request, "\r\n")
+	return response, nil
+}
 
-	requestTarget := strings.Split(parsedRequest[0], " ")
-	requestMethod := (requestTarget[0])
-	requestBody := parsedRequest[len(parsedRequest)-1]
-	requestContent := parsedRequest[3]
-	requestEncoding := parsedRequest[5]
-
-	var statusLine, headers, body string
+func EchoEndpoint(request Request) (Response, error) {
+	responseHeaders := ResponseHeaders{}
+	statusLine := "HTTP/1.1 200 OK"
+	body := strings.TrimPrefix(request.Target, "/echo/")
 
 	switch {
-	case requestTarget[1] == "/":
-		statusLine = "HTTP/1.1 200 OK"
-		headers = ""
-		body = ""
+	case strings.Contains(request.Encoding, "gzip"):
+		var buffer bytes.Buffer
+		writer := gzip.NewWriter(&buffer)
+		writer.Write([]byte(body))
+		writer.Close()
+		body = buffer.String()
 
-	case strings.HasPrefix(requestTarget[1], "/echo/"):
-		responseText := strings.TrimPrefix(requestTarget[1], "/echo/")
-		statusLine = "HTTP/1.1 200 OK"
-
-		switch {
-		case strings.Contains(requestEncoding, "gzip"):
-			headers = fmt.Sprintf("Content-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d", len(responseText))
-			body = responseText
-		default:
-			headers = fmt.Sprintf("Content-Type: text/plain\r\nContent-Length: %d", len(responseText))
-			body = responseText
-
-		}
-
-	case strings.HasPrefix(requestTarget[1], "/user-agent"):
-		responseText := strings.TrimPrefix(parsedRequest[2], "User-Agent: ")
-
-		statusLine = "HTTP/1.1 200 OK"
-		headers = fmt.Sprintf("Content-Type: text/plain\r\nContent-Length: %d", len(responseText))
-		body = responseText
-
-	case strings.HasPrefix(requestTarget[1], "/files/"):
-
-		fileName := strings.TrimPrefix(requestTarget[1], "/files/")
-		file, err := os.ReadFile(os.Args[2] + fileName)
-		switch {
-		case requestMethod == "GET":
-			if err != nil {
-				fmt.Println("Error reading file:", err)
-				statusLine = "HTTP/1.1 404 Not Found"
-				headers = ""
-				body = "File not found"
-			} else {
-				statusLine = "HTTP/1.1 200 OK"
-				headers = fmt.Sprintf("Content-Type: application/octet-stream\r\nContent-Length: %d", len(file))
-				body = string(file)
-			}
-		case requestMethod == "POST" && strings.Contains(requestContent, "application/octet-stream"):
-			err := os.WriteFile(os.Args[2]+fileName, []byte(requestBody), 0666)
-			if err != nil {
-				fmt.Println("Error writing file:", err)
-				statusLine = "HTTP/1.1 500 Internal Server Error"
-			} else {
-				statusLine = "HTTP/1.1 201 Created"
-			}
-		}
+		responseHeaders.Encoding = "gzip"
+		responseHeaders.ContentType = "text/plain"
+		responseHeaders.ContentLength = fmt.Sprintf("%d", len(body))
 
 	default:
-		statusLine = "HTTP/1.1 404 Not Found"
-		headers = ""
-		body = ""
+		responseHeaders.ContentType = "text/plain"
+		responseHeaders.ContentLength = fmt.Sprintf("%d", len(body))
 	}
-	response := buildResponse(statusLine, headers, body)
-	fmt.Println("\nTarget:", requestTarget[1], "\nResponse:", response)
 
-	if _, err := conn.Write([]byte(response)); err != nil {
-		fmt.Println("Error writing response:", err)
+	response := Response{
+		StatusLine: statusLine,
+		Headers:    responseHeaders,
+		Body:       body,
 	}
+
+	return response, nil
+}
+
+func UserAgentEndpoint(request Request) (Response, error) {
+	responseHeaders := ResponseHeaders{}
+	statusLine := "HTTP/1.1 200 OK"
+
+	responseHeaders.ContentType = "text/plain"
+	responseHeaders.ContentLength = fmt.Sprintf("%d", len(request.UserAgent))
+	body := request.UserAgent
+
+	response := Response{
+		StatusLine: statusLine,
+		Headers:    responseHeaders,
+		Body:       body,
+	}
+
+	return response, nil
+}
+
+func FilesEndpoint(request Request) (Response, error) {
+	var statusLine string
+	var body string
+	var err error
+	responseHeaders := ResponseHeaders{}
+	fileName := strings.TrimPrefix(request.Target, "/files/")
+
+	switch request.Method {
+	case "GET":
+		var file []byte
+		file, err = os.ReadFile(os.Args[2] + fileName)
+		if err != nil {
+			err = fmt.Errorf("error reading file: %w", err)
+			statusLine = "HTTP/1.1 404 Not Found"
+			body = "File not found"
+		} else {
+			statusLine = "HTTP/1.1 200 OK"
+			responseHeaders.ContentType = "application/octet-stream"
+			responseHeaders.ContentLength = fmt.Sprintf("%d", len(file))
+			body = string(file)
+		}
+	case "POST":
+		if strings.Contains(request.ContentType, "application/octet-stream") {
+			byteBody := []byte(request.Body)
+			err = os.WriteFile(os.Args[2]+fileName, byteBody, 0666)
+			if err != nil {
+				err = fmt.Errorf("error writing file: %w", err)
+				statusLine = "HTTP/1.1 500 Internal Server Error"
+				body = "Error Writing file"
+			} else {
+				statusLine = "HTTP/1.1 201 Created"
+				body = string(byteBody)
+			}
+		} else {
+			statusLine = "HTTP/1.1 400 Bad Request"
+			body = "Invalid content type"
+		}
+	}
+	response := Response{
+		StatusLine: statusLine,
+		Headers:    responseHeaders,
+		Body:       body,
+	}
+
+	return response, err
+}
+
+func handleRequest(conn net.Conn, request Request) (Response, error) {
+	var response Response
+	var err error
+
+	switch {
+	case request.Target == "/":
+		response, err = BaseEndpoint(request)
+	case strings.HasPrefix(request.Target, "/echo/"):
+		response, err = EchoEndpoint(request)
+	case strings.HasPrefix(request.Target, "/user-agent"):
+		response, err = UserAgentEndpoint(request)
+	case strings.HasPrefix(request.Target, "/files/"):
+		response, err = FilesEndpoint(request)
+
+	default:
+		response.StatusLine = "HTTP/1.1 404 Not Found"
+		response.Body = "Not Found"
+	}
+
+	if err != nil {
+		err = fmt.Errorf("error handling request: %w", err)
+	}
+
+	fmt.Println("\nTarget:", request.Target, "\nResponse:", response)
+
+	if _, writeErr := conn.Write([]byte(response.buildResponse())); err != nil {
+		return response, fmt.Errorf("error writing response: %w", writeErr)
+	}
+	return response, err
 }
 
 func main() {
@@ -180,9 +260,32 @@ func main() {
 		}
 		fmt.Println("Accepted connection from:", conn.RemoteAddr())
 
-		go handleRequest(conn)
-		//fmt.Println("Received request:")
-		//fmt.Println(request)
+		go func(conn net.Conn) {
+			defer conn.Close()
+			conn.SetDeadline(time.Now().Add(5 * time.Second))
 
+			buffer := make([]byte, 1024)
+			n, err := conn.Read(buffer)
+			if err != nil {
+				fmt.Println("Error reading from connection:", err)
+				return
+			}
+
+			request, err := parseRequest(buffer[:n])
+			if err != nil {
+				fmt.Println("Error parsing request:", err)
+				return
+			}
+
+			_, err = handleRequest(conn, request)
+			if err != nil {
+				fmt.Println("error handling request:", err)
+				return
+			}
+
+			//fmt.Println("Received request:")
+			//fmt.Println(request)
+		}(conn)
 	}
+
 }
