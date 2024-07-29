@@ -6,6 +6,16 @@ import (
 	"strings"
 )
 
+func buildResponse(statusLine, headers, body string) string {
+	var response strings.Builder
+	response.WriteString(statusLine)
+	response.WriteString("\r\n")
+	response.WriteString(headers)
+	response.WriteString("\r\n")
+	response.WriteString(body)
+	return response.String()
+}
+
 func handleRequest(conn net.Conn) {
 	defer conn.Close()
 
@@ -20,31 +30,35 @@ func handleRequest(conn net.Conn) {
 	requestTarget := strings.Split(parsedRequest[0], " ")
 	var responseBody string
 
+	var statusLine, headers, body string
+
 	switch {
 	case requestTarget[1] == "/":
-		responseBody := "HTTP/1.1 200 OK\r\n\r\n"
-		fmt.Println(responseBody)
-		if _, err := conn.Write([]byte(responseBody)); err != nil {
-			fmt.Println(err)
-		}
+		statusLine = "HTTP/1.1 200 OK"
+		headers = ""
+		body = ""
 
 	case strings.HasPrefix(requestTarget[1], "/echo/"):
-		fmt.Println("Resource found:", requestTarget[1])
 		responseText := strings.TrimPrefix(requestTarget[1], "/echo/")
-		responseBody = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + fmt.Sprint(len(responseText)) + "\r\n\r\n" + responseText
-		fmt.Println(responseBody)
-		if _, err := conn.Write([]byte(responseBody)); err != nil {
-			fmt.Println(err)
-		}
+
+		statusLine = "HTTP/1.1 200 OK"
+		headers = fmt.Sprintf("Content-Type: text/plain\r\nContent-Length: %d", len(responseText))
+		body = strings.TrimPrefix(requestTarget[1], "/echo/")
 
 	default:
-		responseBody := "HTTP/1.1 404 Not Found\r\n\r\n"
-		fmt.Println("Resource not found:", requestTarget[1])
+		statusLine = "HTTP/1.1 404 Not Found"
+		headers = ""
+		body = ""
 		if _, err := conn.Write([]byte(responseBody)); err != nil {
 			fmt.Println(err)
 		}
 	}
-	fmt.Println(responseBody)
+	response := buildResponse(statusLine, headers, body)
+	fmt.Println("Target:", requestTarget[1], "\nResponse:", response)
+
+	if _, err := conn.Write([]byte(response)); err != nil {
+		fmt.Println("Error writing response:", err)
+	}
 }
 
 func main() {
